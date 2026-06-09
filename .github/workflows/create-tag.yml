@@ -1,0 +1,43 @@
+name: Reusable - Create and push git tag from version file
+
+on:
+  workflow_call:
+    inputs:
+      tag_prefix:
+        description: Prefix prepended to the version string (e.g. 'alpha-'). Empty for release tags.
+        required: false
+        type: string
+        default: ''
+      version_file:
+        description: Path to the file containing the version string
+        required: false
+        type: string
+        default: 'version.txt'
+    secrets:
+      PACKAGES_TOKEN:
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  create_tag:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Fetch origin
+        run: git fetch origin
+
+      - name: Create and push tag
+        env:
+          VERSION_FILE: ${{ inputs.version_file }}
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+        run: |
+          version=$(cat "$VERSION_FILE")
+          git tag "$TAG_PREFIX$version"
+          git push origin "refs/tags/$TAG_PREFIX$version"
