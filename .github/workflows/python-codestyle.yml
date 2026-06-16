@@ -1,0 +1,20 @@
+name: Reusable - Python codestyle check (ruff)
+
+on:
+  workflow_call:
+
+jobs:
+  style-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run ruff formatting check
+        uses: astral-sh/ruff-action@v4.0.0
+        with:
+          args: format --check
+
+      - name: Run ruff linting check
+        uses: astral-sh/ruff-action@v4.0.0
+        with:
+          args: check
