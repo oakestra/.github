@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: 'version.txt'
+      force:
+        description: Force-create and force-push the tag, overwriting it if it already exists. Needed for tags that move on every run (e.g. alpha tags).
+        required: false
+        type: boolean
+        default: false
     secrets:
       PACKAGES_TOKEN:
         required: true
@@ -37,7 +42,14 @@ jobs:
         env:
           VERSION_FILE: ${{ inputs.version_file }}
           TAG_PREFIX: ${{ inputs.tag_prefix }}
+          FORCE: ${{ inputs.force }}
         run: |
           version=$(cat "$VERSION_FILE")
-          git tag "$TAG_PREFIX$version"
-          git push origin "refs/tags/$TAG_PREFIX$version"
+          tag="$TAG_PREFIX$version"
+          if [ "$FORCE" = "true" ]; then
+            git tag -f "$tag"
+            git push origin "refs/tags/$tag" --force
+          else
+            git tag "$tag"
+            git push origin "refs/tags/$tag"
+          fi
