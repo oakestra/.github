@@ -1,0 +1,152 @@
+name: AI Fix Dispatcher (reusable)
+on:
+  workflow_call:
+    inputs:
+      bot_username:
+        type: string
+        default: OakAssistant
+      environment_name:
+        type: string
+        default: OakAssistant
+    secrets:
+      AWX_HOST:
+        required: true
+      AWX_AI_TEMPLATE_ID:
+        required: true
+      AWX_WEBHOOK_KEY:
+        required: true
+
+jobs:
+  dispatch:
+    if: >-
+      (github.event_name == 'issues'        && github.event.assignee.login == inputs.bot_username) ||
+      (github.event_name == 'pull_request'  && github.event.assignee.login == inputs.bot_username) ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, format('@{0}', inputs.bot_username)))
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment_name }}
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Determine trigger kind, number, body, and PR head ref
+        id: meta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO_FULL='${{ github.repository }}'                          # e.g. oakestra/oakestra
+          REPO_SHORT='${{ github.event.repository.name }}'              # e.g. oakestra
+
+          if   [ "${{ github.event_name }}" = "pull_request" ]; then
+            KIND=pr
+            NUM='${{ github.event.pull_request.number }}'
+            BODY=$(jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH")
+            HEAD=$(jq -r '.pull_request.head.ref // ""' "$GITHUB_EVENT_PATH")
+          elif [ "${{ github.event_name }}" = "issues" ]; then
+            KIND=issue
+            NUM='${{ github.event.issue.number }}'
+            BODY=$(jq -r '.issue.body // ""' "$GITHUB_EVENT_PATH")
+            HEAD=""
+          else
+            # issue_comment fires on both issues and PRs. Resolve which.
+            IS_PR=$(jq -r '.issue.pull_request // empty' "$GITHUB_EVENT_PATH")
+            NUM='${{ github.event.issue.number }}'
+            BODY=$(jq -r '.issue.body // ""' "$GITHUB_EVENT_PATH")
+            if [ -n "$IS_PR" ]; then
+              KIND=pr
+              HEAD=$(gh pr view "$NUM" --repo "$REPO_FULL" --json headRefName -q .headRefName)
+            else
+              KIND=issue
+              HEAD=""
+            fi
+          fi
+
+          {
+            echo "kind=$KIND"
+            echo "number=$NUM"
+            echo "target_repo=$REPO_SHORT"
+            echo "target_repo_full=$REPO_FULL"
+            echo "pr_head_ref=$HEAD"
+          } >>"$GITHUB_OUTPUT"
+
+          # body is multi-line; use a unique heredoc delimiter.
+          DELIM="EOF_BODY_$RANDOM"
+          {
+            echo "body<<$DELIM"
+            echo "$BODY"
+            echo "$DELIM"
+          } >>"$GITHUB_OUTPUT"
+
+          # Pull the full chronological conversation (OP + comments [+ PR reviews]) for AI context.
+          if [ "$KIND" = "pr" ]; then
+            CONV=$(gh pr view "$NUM" --repo "$REPO_FULL" \
+              --json body,author,createdAt,comments,reviews \
+              --jq '[
+                {kind:"OP",             who:.author.login, when:.createdAt,   text:(.body // "")}
+              ] + (.comments // [] | map({kind:"comment",        who:.author.login, when:.createdAt,   text:(.body // "")}))
+                 + (.reviews  // [] | map({kind:("review/" + .state), who:.author.login, when:.submittedAt, text:(.body // "")}))
+                | sort_by(.when)
+                | map("--- [\(.kind) by @\(.who) at \(.when)]\n\(.text)")
+                | join("\n\n")')
+          else
+            CONV=$(gh issue view "$NUM" --repo "$REPO_FULL" \
+              --json body,author,createdAt,comments \
+              --jq '[
+                {kind:"OP",      who:.author.login, when:.createdAt, text:(.body // "")}
+              ] + (.comments // [] | map({kind:"comment", who:.author.login, when:.createdAt, text:(.body // "")}))
+                | sort_by(.when)
+                | map("--- [\(.kind) by @\(.who) at \(.when)]\n\(.text)")
+                | join("\n\n")')
+          fi
+
+          DELIM2="EOF_CONV_$RANDOM"
+          {
+            echo "conversation<<$DELIM2"
+            echo "$CONV"
+            echo "$DELIM2"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Launch AWX job template (ai_implement)
+        env:
+          AWX_HOST:    ${{ secrets.AWX_HOST }}
+          TEMPLATE_ID: ${{ secrets.AWX_AI_TEMPLATE_ID }}
+          WEBHOOK_KEY: ${{ secrets.AWX_WEBHOOK_KEY }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg trigger_kind     '${{ steps.meta.outputs.kind }}' \
+            --arg trigger_number   '${{ steps.meta.outputs.number }}' \
+            --arg target_repo      '${{ steps.meta.outputs.target_repo }}' \
+            --arg target_repo_full '${{ steps.meta.outputs.target_repo_full }}' \
+            --arg pr_head_ref      '${{ steps.meta.outputs.pr_head_ref }}' \
+            --arg body             "${{ steps.meta.outputs.body }}" \
+            --arg conversation     "${{ steps.meta.outputs.conversation }}" \
+            '{extra_vars: {
+                trigger_kind:     $trigger_kind,
+                trigger_number:   $trigger_number,
+                target_repo:      $target_repo,
+                target_repo_full: $target_repo_full,
+                pr_head_ref:      $pr_head_ref,
+                body:             $body,
+                conversation:     $conversation
+            }}' > payload.json
+
+          curl -fsSL -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${WEBHOOK_KEY}" \
+            "${AWX_HOST}/api/v2/job_templates/${TEMPLATE_ID}/github/" \
+            --data @payload.json
+
+      - name: Acknowledge on the source issue/PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ steps.meta.outputs.kind }}" = "issue" ]; then
+            gh issue comment "${{ steps.meta.outputs.number }}" \
+              --repo "${{ steps.meta.outputs.target_repo_full }}" \
+              --body ":robot: AI fix run dispatched. A draft PR will be opened when ready."
+          else
+            gh pr comment "${{ steps.meta.outputs.number }}" \
+              --repo "${{ steps.meta.outputs.target_repo_full }}" \
+              --body ":robot: AI fix run dispatched. Commits will be pushed to this PR's branch when ready."
+          fi
