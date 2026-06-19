@@ -127,8 +127,8 @@ jobs:
           CONVERSATION:    ${{ steps.meta.outputs.conversation }}
         run: |
           set -euo pipefail
-          # Read values from env vars (not from ${{ }} interpolation) so that
-          # untrusted issue/PR/comment text cannot break shell quoting and run
+          # All inputs flow in via env vars (declared above) so untrusted
+          # issue/PR/comment text cannot break shell quoting or execute
           # arbitrary commands.
           jq -n \
             --arg trigger_kind     "$KIND" \
