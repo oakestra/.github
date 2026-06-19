@@ -151,7 +151,7 @@ jobs:
           curl -s -X POST \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${WEBHOOK_KEY}" \
-            "https://${AWX_HOST}/api/v2/job_templates/${TEMPLATE_ID}/github/" \
+            "https://${AWX_HOST}/api/v2/job_templates/${TEMPLATE_ID}/launch/" \
             --data @payload.json --insecure
 
       - name: Acknowledge on the source issue/PR
