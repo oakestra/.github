@@ -1,4 +1,4 @@
-name: AI Fix Dispatcher (reusable)
+name: OakAssistant Fix 
 on:
   workflow_call:
     inputs:
@@ -8,6 +8,12 @@ on:
       environment_name:
         type: string
         default: OakAssistant
+      runs_on:
+        # JSON-array string consumed by fromJSON below. Use '["ubuntu-latest"]'
+        # for GitHub-hosted, or '["self-hosted", "<label>"]' to pin to a
+        # self-hosted runner that can reach a private AWX endpoint.
+        type: string
+        default: '["ubuntu-latest"]'
     secrets:
       AWX_HOST:
         required: true
@@ -22,7 +28,7 @@ jobs:
       (github.event_name == 'issues'        && github.event.assignee.login == inputs.bot_username) ||
       (github.event_name == 'pull_request'  && github.event.assignee.login == inputs.bot_username) ||
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, format('@{0}', inputs.bot_username)))
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     environment: ${{ inputs.environment_name }}
     permissions:
       issues: write
@@ -31,26 +37,27 @@ jobs:
       - name: Determine trigger kind, number, body, and PR head ref
         id: meta
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME:  ${{ github.event_name }}
+          REPO_FULL:   ${{ github.repository }}
+          REPO_SHORT:  ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
-          REPO_FULL='${{ github.repository }}'                          # e.g. oakestra/oakestra
-          REPO_SHORT='${{ github.event.repository.name }}'              # e.g. oakestra
 
-          if   [ "${{ github.event_name }}" = "pull_request" ]; then
+          if   [ "$EVENT_NAME" = "pull_request" ]; then
             KIND=pr
-            NUM='${{ github.event.pull_request.number }}'
+            NUM=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
             BODY=$(jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH")
             HEAD=$(jq -r '.pull_request.head.ref // ""' "$GITHUB_EVENT_PATH")
-          elif [ "${{ github.event_name }}" = "issues" ]; then
+          elif [ "$EVENT_NAME" = "issues" ]; then
             KIND=issue
-            NUM='${{ github.event.issue.number }}'
+            NUM=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
             BODY=$(jq -r '.issue.body // ""' "$GITHUB_EVENT_PATH")
             HEAD=""
           else
             # issue_comment fires on both issues and PRs. Resolve which.
             IS_PR=$(jq -r '.issue.pull_request // empty' "$GITHUB_EVENT_PATH")
-            NUM='${{ github.event.issue.number }}'
+            NUM=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
             BODY=$(jq -r '.issue.body // ""' "$GITHUB_EVENT_PATH")
             if [ -n "$IS_PR" ]; then
               KIND=pr
@@ -108,19 +115,28 @@ jobs:
 
       - name: Launch AWX job template (ai_implement)
         env:
-          AWX_HOST:    ${{ secrets.AWX_HOST }}
-          TEMPLATE_ID: ${{ secrets.AWX_AI_TEMPLATE_ID }}
-          WEBHOOK_KEY: ${{ secrets.AWX_WEBHOOK_KEY }}
+          AWX_HOST:        ${{ secrets.AWX_HOST }}
+          TEMPLATE_ID:     ${{ secrets.AWX_AI_TEMPLATE_ID }}
+          WEBHOOK_KEY:     ${{ secrets.AWX_WEBHOOK_KEY }}
+          KIND:            ${{ steps.meta.outputs.kind }}
+          NUM:             ${{ steps.meta.outputs.number }}
+          TGT_REPO:        ${{ steps.meta.outputs.target_repo }}
+          TGT_REPO_FULL:   ${{ steps.meta.outputs.target_repo_full }}
+          PR_HEAD_REF:     ${{ steps.meta.outputs.pr_head_ref }}
+          BODY:            ${{ steps.meta.outputs.body }}
+          CONVERSATION:    ${{ steps.meta.outputs.conversation }}
         run: |
           set -euo pipefail
+          # All inputs are read from env vars below so untrusted issue/PR/comment
+          # text cannot break shell quoting and execute arbitrary commands.
           jq -n \
-            --arg trigger_kind     '${{ steps.meta.outputs.kind }}' \
-            --arg trigger_number   '${{ steps.meta.outputs.number }}' \
-            --arg target_repo      '${{ steps.meta.outputs.target_repo }}' \
-            --arg target_repo_full '${{ steps.meta.outputs.target_repo_full }}' \
-            --arg pr_head_ref      '${{ steps.meta.outputs.pr_head_ref }}' \
-            --arg body             "${{ steps.meta.outputs.body }}" \
-            --arg conversation     "${{ steps.meta.outputs.conversation }}" \
+            --arg trigger_kind     "$KIND" \
+            --arg trigger_number   "$NUM" \
+            --arg target_repo      "$TGT_REPO" \
+            --arg target_repo_full "$TGT_REPO_FULL" \
+            --arg pr_head_ref      "$PR_HEAD_REF" \
+            --arg body             "$BODY" \
+            --arg conversation     "$CONVERSATION" \
             '{extra_vars: {
                 trigger_kind:     $trigger_kind,
                 trigger_number:   $trigger_number,
@@ -139,14 +155,18 @@ jobs:
 
       - name: Acknowledge on the source issue/PR
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          KIND:          ${{ steps.meta.outputs.kind }}
+          NUM:           ${{ steps.meta.outputs.number }}
+          TGT_REPO_FULL: ${{ steps.meta.outputs.target_repo_full }}
         run: |
-          if [ "${{ steps.meta.outputs.kind }}" = "issue" ]; then
-            gh issue comment "${{ steps.meta.outputs.number }}" \
-              --repo "${{ steps.meta.outputs.target_repo_full }}" \
+          set -euo pipefail
+          if [ "$KIND" = "issue" ]; then
+            gh issue comment "$NUM" \
+              --repo "$TGT_REPO_FULL" \
               --body ":robot: AI fix run dispatched. A draft PR will be opened when ready."
           else
-            gh pr comment "${{ steps.meta.outputs.number }}" \
-              --repo "${{ steps.meta.outputs.target_repo_full }}" \
+            gh pr comment "$NUM" \
+              --repo "$TGT_REPO_FULL" \
               --body ":robot: AI fix run dispatched. Commits will be pushed to this PR's branch when ready."
           fi
