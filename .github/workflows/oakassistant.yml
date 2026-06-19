@@ -148,7 +148,7 @@ jobs:
                 conversation:     $conversation
             }}' > payload.json
 
-          curl -fsSL -X POST \
+          curl -s -X POST \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${WEBHOOK_KEY}" \
             "https://${AWX_HOST}/api/v2/job_templates/${TEMPLATE_ID}/github/" \
