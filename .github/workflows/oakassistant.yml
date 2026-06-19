@@ -15,7 +15,7 @@ on:
         type: string
         default: '["ubuntu-latest"]'
     secrets:
-      AWX_HOST:
+      TOWER_HOST:
         required: true
       AWX_AI_TEMPLATE_ID:
         required: true
@@ -115,7 +115,7 @@ jobs:
 
       - name: Launch AWX job template (ai_implement)
         env:
-          AWX_HOST:        ${{ secrets.AWX_HOST }}
+          AWX_HOST:        ${{ secrets.TOWER_HOST }}
           TEMPLATE_ID:     ${{ secrets.AWX_AI_TEMPLATE_ID }}
           WEBHOOK_KEY:     ${{ secrets.AWX_WEBHOOK_KEY }}
           KIND:            ${{ steps.meta.outputs.kind }}
