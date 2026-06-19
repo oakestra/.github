@@ -152,7 +152,7 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${WEBHOOK_KEY}" \
             "https://${AWX_HOST}/api/v2/job_templates/${TEMPLATE_ID}/github/" \
-            --data @payload.json
+            --data @payload.json --insecure
 
       - name: Acknowledge on the source issue/PR
         env:
