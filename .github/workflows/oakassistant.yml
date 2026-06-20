@@ -9,9 +9,6 @@ on:
         type: string
         default: OakAssistant
       runs_on:
-        # JSON-array string consumed by fromJSON below. Use '["ubuntu-latest"]'
-        # for GitHub-hosted, or '["self-hosted", "<label>"]' to pin to a
-        # self-hosted runner that can reach a private AWX endpoint.
         type: string
         default: '["ubuntu-latest"]'
     secrets:
@@ -25,8 +22,9 @@ on:
 jobs:
   dispatch:
     if: >-
-      (github.event_name == 'issues'        && github.event.assignee.login == inputs.bot_username) ||
-      (github.event_name == 'pull_request'  && github.event.assignee.login == inputs.bot_username) ||
+      (github.event_name == 'issues'        && github.event.action == 'assigned'         && github.event.assignee.login == inputs.bot_username) ||
+      (github.event_name == 'pull_request'  && github.event.action == 'assigned'         && github.event.assignee.login == inputs.bot_username) ||
+      (github.event_name == 'pull_request'  && github.event.action == 'review_requested' && github.event.requested_reviewer.login == inputs.bot_username) ||
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, format('@{0}', inputs.bot_username)))
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     environment: ${{ inputs.environment_name }}
@@ -34,21 +32,29 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - name: Determine trigger kind, number, body, and PR head ref
+      - name: Determine trigger kind, mode, number, body, and PR head ref
         id: meta
         env:
           GH_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           EVENT_NAME:  ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
           REPO_FULL:   ${{ github.repository }}
           REPO_SHORT:  ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
+
+          # MODE: "review" when the bot was added as a reviewer on a PR;
+          #       "implement" for everything else (assignment, @-mention).
+          MODE=implement
 
           if   [ "$EVENT_NAME" = "pull_request" ]; then
             KIND=pr
             NUM=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
             BODY=$(jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH")
             HEAD=$(jq -r '.pull_request.head.ref // ""' "$GITHUB_EVENT_PATH")
+            if [ "$EVENT_ACTION" = "review_requested" ]; then
+              MODE=review
+            fi
           elif [ "$EVENT_NAME" = "issues" ]; then
             KIND=issue
             NUM=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
@@ -70,6 +76,7 @@ jobs:
 
           {
             echo "kind=$KIND"
+            echo "mode=$MODE"
             echo "number=$NUM"
             echo "target_repo=$REPO_SHORT"
             echo "target_repo_full=$REPO_FULL"
@@ -119,6 +126,7 @@ jobs:
           TEMPLATE_ID:     ${{ secrets.AWX_AI_TEMPLATE_ID }}
           WEBHOOK_KEY:     ${{ secrets.AWX_WEBHOOK_KEY }}
           KIND:            ${{ steps.meta.outputs.kind }}
+          MODE:            ${{ steps.meta.outputs.mode }}
           NUM:             ${{ steps.meta.outputs.number }}
           TGT_REPO:        ${{ steps.meta.outputs.target_repo }}
           TGT_REPO_FULL:   ${{ steps.meta.outputs.target_repo_full }}
@@ -132,6 +140,7 @@ jobs:
           # arbitrary commands.
           jq -n \
             --arg trigger_kind     "$KIND" \
+            --arg trigger_mode     "$MODE" \
             --arg trigger_number   "$NUM" \
             --arg target_repo      "$TGT_REPO" \
             --arg target_repo_full "$TGT_REPO_FULL" \
@@ -140,6 +149,7 @@ jobs:
             --arg conversation     "$CONVERSATION" \
             '{extra_vars: {
                 trigger_kind:     $trigger_kind,
+                trigger_mode:     $trigger_mode,
                 trigger_number:   $trigger_number,
                 target_repo:      $target_repo,
                 target_repo_full: $target_repo_full,
@@ -158,11 +168,16 @@ jobs:
         env:
           GH_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
           KIND:          ${{ steps.meta.outputs.kind }}
+          MODE:          ${{ steps.meta.outputs.mode }}
           NUM:           ${{ steps.meta.outputs.number }}
           TGT_REPO_FULL: ${{ steps.meta.outputs.target_repo_full }}
         run: |
           set -euo pipefail
-          if [ "$KIND" = "issue" ]; then
+          if [ "$MODE" = "review" ]; then
+            gh pr comment "$NUM" \
+              --repo "$TGT_REPO_FULL" \
+              --body ":robot: OakAssistant AI review dispatched. A review comment will be posted when ready."
+          elif [ "$KIND" = "issue" ]; then
             gh issue comment "$NUM" \
               --repo "$TGT_REPO_FULL" \
               --body ":robot: OakAssistant AI fix run dispatched. A draft PR will be opened when ready."
