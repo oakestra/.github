@@ -22,10 +22,12 @@ on:
 jobs:
   dispatch:
     if: >-
-      (github.event_name == 'issues'        && github.event.action == 'assigned'         && github.event.assignee.login == inputs.bot_username) ||
-      (github.event_name == 'pull_request'  && github.event.action == 'assigned'         && github.event.assignee.login == inputs.bot_username) ||
-      (github.event_name == 'pull_request'  && github.event.action == 'review_requested' && github.event.requested_reviewer.login == inputs.bot_username) ||
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, format('@{0}', inputs.bot_username)))
+      (github.event_name == 'issues'              && github.event.action == 'assigned'         && github.event.assignee.login          == inputs.bot_username) ||
+      (github.event_name == 'pull_request'        && github.event.action == 'assigned'         && github.event.assignee.login          == inputs.bot_username) ||
+      (github.event_name == 'pull_request_target' && github.event.action == 'assigned'         && github.event.assignee.login          == inputs.bot_username) ||
+      (github.event_name == 'pull_request'        && github.event.action == 'review_requested' && github.event.requested_reviewer.login == inputs.bot_username) ||
+      (github.event_name == 'pull_request_target' && github.event.action == 'review_requested' && github.event.requested_reviewer.login == inputs.bot_username) ||
+      (github.event_name == 'issue_comment'       && contains(github.event.comment.body, format('@{0}', inputs.bot_username)))
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     environment: ${{ inputs.environment_name }}
     permissions:
@@ -47,7 +49,7 @@ jobs:
           #       "implement" for everything else (assignment, @-mention).
           MODE=implement
 
-          if   [ "$EVENT_NAME" = "pull_request" ]; then
+          if   [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "pull_request_target" ]; then
             KIND=pr
             NUM=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
             BODY=$(jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH")
@@ -102,6 +104,30 @@ jobs:
                 | sort_by(.when)
                 | map("--- [\(.kind) by @\(.who) at \(.when)]\n\(.text)")
                 | join("\n\n")')
+
+            # For PRs: scan the body for GitHub closing keywords (fixes/closes/resolves #N)
+            # and fetch the linked issues' bodies so the AI has the original context.
+            #
+            # Build LINKED_BLOCK with $'...' ANSI-C newline escapes (not literal
+            # newlines) so any auto-formatter that collapses multi-line strings
+            # can't squash the separators.
+            LINKED_ISSUES=$(printf '%s' "$BODY" \
+              | grep -oiE '\b(close[sd]?|fix(es|ed)?|resolve[sd]?)[[:space:]]+#[0-9]+' \
+              | grep -oE '#[0-9]+' \
+              | tr -d '#' \
+              | sort -un)
+            LINKED_BLOCK=""
+            for ISSUE_NUM in $LINKED_ISSUES; do
+              ISSUE_DATA=$(gh api "repos/${REPO_FULL}/issues/${ISSUE_NUM}" \
+                --jq '"#" + (.number|tostring) + " - " + (.title // "") + "\nopened by @" + (.user.login // "?") + " at " + (.created_at // "?") + "\n\n" + (.body // "")' \
+                2>/dev/null) || ISSUE_DATA=""
+              if [ -n "$ISSUE_DATA" ]; then
+                LINKED_BLOCK+=$'--- [LINKED ISSUE #'"${ISSUE_NUM}"$']\n'"${ISSUE_DATA}"$'\n\n'
+              fi
+            done
+            if [ -n "$LINKED_BLOCK" ]; then
+              CONV=$(printf '%s\n\n----- LINKED ISSUES (from PR closing keywords: fixes/closes/resolves #N) -----\n%s----- END LINKED ISSUES -----\n' "$CONV" "$LINKED_BLOCK")
+            fi
           else
             CONV=$(gh issue view "$NUM" --repo "$REPO_FULL" \
               --json body,author,createdAt,comments \
