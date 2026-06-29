@@ -115,7 +115,8 @@ jobs:
               | grep -oiE '\b(close[sd]?|fix(es|ed)?|resolve[sd]?)[[:space:]]+#[0-9]+' \
               | grep -oE '#[0-9]+' \
               | tr -d '#' \
-              | sort -un)
+              | sort -un \
+              || true)
             LINKED_BLOCK=""
             for ISSUE_NUM in $LINKED_ISSUES; do
               ISSUE_DATA=$(gh api "repos/${REPO_FULL}/issues/${ISSUE_NUM}" \
