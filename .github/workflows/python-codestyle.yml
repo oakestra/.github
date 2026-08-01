@@ -10,11 +10,11 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Run ruff formatting check
-        uses: astral-sh/ruff-action@v4.0.0
+        uses: astral-sh/ruff-action@v4.1.0
         with:
           args: format --check
 
       - name: Run ruff linting check
-        uses: astral-sh/ruff-action@v4.0.0
+        uses: astral-sh/ruff-action@v4.1.0
         with:
           args: check
