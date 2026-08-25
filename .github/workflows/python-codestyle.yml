@@ -2,6 +2,14 @@ name: Reusable - Python codestyle check (ruff)
 
 on:
   workflow_call:
+    inputs:
+      ruff_version:
+        description: |
+          Ruff version to run, e.g. 0.15.22. Pin this to the same rev the caller
+          uses in .pre-commit-config.yaml so CI and local hooks agree.
+        required: false
+        type: string
+        default: '0.15.22'
 
 jobs:
   style-check:
@@ -12,9 +20,11 @@ jobs:
       - name: Run ruff formatting check
         uses: astral-sh/ruff-action@v4.1.0
         with:
+          version: ${{ inputs.ruff_version }}
           args: format --check
 
       - name: Run ruff linting check
         uses: astral-sh/ruff-action@v4.1.0
         with:
+          version: ${{ inputs.ruff_version }}
           args: check
